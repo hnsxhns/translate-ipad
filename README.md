@@ -46,6 +46,24 @@ Cửa sổ thay đổi kích thước được (Split View / Stage Manager); b�
 
 Push lên `main` (hoặc tab *Actions* → **TestFlight** → *Run workflow*). Khoảng 10–15 phút sau bản build xuất hiện trong App Store Connect → TestFlight (Apple xử lý thêm vài phút). Số build tự tăng theo lần chạy. App đã khai báo không dùng mã hoá đặc biệt nên không bị hỏi Export Compliance.
 
+## Cài lên iPad từ Windows bằng Sideloadly (miễn phí, không cần Mac)
+
+Workflow `.github/workflows/build-ipa.yml` build file `.ipa` **chưa ký** trên máy Mac của GitHub, đồng thời chạy app trên **giả lập iPad** và chụp màn hình. Không cần tài khoản Apple trả phí hay secret nào.
+
+1. **Đẩy code lên GitHub** (repo public thì phút build macOS miễn phí không giới hạn).
+2. Mỗi lần push lên `main` (hoặc vào *Actions* → **Build IPA (Sideloadly)** → *Run workflow*), đợi khoảng 10 phút.
+3. Mở lần chạy đó, phần **Artifacts** có:
+   - `LiveTranslate-ipa`: file app để cài lên iPad
+   - `ipad-simulator-screenshots`: ảnh màn hình đăng nhập và màn hình chính trên giả lập iPad
+4. Trên Windows: cài **iTunes** (bản tải từ apple.com, không dùng bản Microsoft Store) và **Sideloadly** (sideloadly.io).
+5. Cắm iPad vào máy tính bằng cáp và bấm *Tin cậy* trên iPad. Mở Sideloadly, kéo file `LiveTranslate.ipa` vào, nhập Apple ID rồi bấm **Start**.
+6. Trên iPad: *Cài đặt → Cài đặt chung → VPN & Quản lý thiết bị* → tin cậy Apple ID của bạn. Với iPadOS 16 trở lên, bật thêm *Cài đặt → Quyền riêng tư & Bảo mật → Chế độ nhà phát triển*.
+
+Lưu ý:
+- Apple ID miễn phí: app hết hạn sau **7 ngày**, khi đó cắm máy và bấm Start lại trong Sideloadly.
+- Sideloadly có thể đổi Bundle ID, khiến **đăng nhập Google** không chạy. Hãy dùng **đăng nhập bằng Claude** (API key).
+- Nếu muốn gắn sẵn Claude API key vào bản build, thêm secret `CLAUDE_API_KEY` (không bắt buộc).
+
 ## Build trên Mac (nếu có)
 
 ```bash

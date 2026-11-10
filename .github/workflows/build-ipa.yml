@@ -1,0 +1,118 @@
+name: Build IPA (Sideloadly)
+
+# Builds an UNSIGNED .ipa for sideloading from Windows with Sideloadly,
+# plus screenshots of the app running in an iPad simulator.
+# No Apple Developer account or signing secrets needed.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  BUNDLE_ID: ${{ vars.BUNDLE_ID || 'com.example.livetranslate' }}
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Generate Xcode project and icon
+        run: |
+          brew install xcodegen
+          python3 scripts/make_icon.py LiveTranslate/Assets.xcassets/AppIcon.appiconset/icon-1024.png
+          xcodegen generate
+
+      # ---------- Unsigned IPA for a real iPad ----------
+      - name: Build for iPad (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project LiveTranslate.xcodeproj \
+            -scheme LiveTranslate \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/device \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            APP_BUNDLE_ID="$BUNDLE_ID" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            CLAUDE_API_KEY="${{ secrets.CLAUDE_API_KEY }}" \
+            GOOGLE_CLIENT_ID="${{ vars.GOOGLE_CLIENT_ID }}" \
+            GOOGLE_REVERSED_CLIENT_ID="${{ vars.GOOGLE_REVERSED_CLIENT_ID || 'com.googleusercontent.apps.placeholder' }}" \
+            | tee build/device.log | grep -E "error:|warning: .*deprecated|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/device/Build/Products/Release-iphoneos/LiveTranslate.app
+
+      - name: Package IPA
+        run: |
+          mkdir -p ipa/Payload
+          cp -R build/device/Build/Products/Release-iphoneos/LiveTranslate.app ipa/Payload/
+          (cd ipa && zip -qry ../LiveTranslate.ipa Payload)
+          ls -lh LiveTranslate.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiveTranslate-ipa
+          path: LiveTranslate.ipa
+          retention-days: 30
+
+      # ---------- iPad simulator: build, launch, screenshot ----------
+      - name: Build for iPad simulator
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project LiveTranslate.xcodeproj \
+            -scheme LiveTranslate \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/sim \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            APP_BUNDLE_ID="$BUNDLE_ID" \
+            | tee build/sim.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/sim/Build/Products/Debug-iphonesimulator/LiveTranslate.app
+
+      - name: Run in iPad simulator and take screenshots
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          devs = json.load(sys.stdin)['devices']
+          ipads = [d for k, v in devs.items() if 'iOS' in k for d in v if d['name'].startswith('iPad')]
+          pro = [d for d in ipads if 'Pro' in d['name']]
+          print((pro or ipads)[0]['udid'])")
+          echo "Simulator: $UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" build/sim/Build/Products/Debug-iphonesimulator/LiveTranslate.app
+          mkdir -p screenshots
+
+          # 1) Login screen
+          xcrun simctl launch "$UDID" "$BUNDLE_ID"
+          sleep 8
+          xcrun simctl io "$UDID" screenshot screenshots/1-login.png
+
+          # 2) Main screen: a fake saved key (via launch argument) skips login
+          xcrun simctl terminate "$UDID" "$BUNDLE_ID" || true
+          xcrun simctl launch "$UDID" "$BUNDLE_ID" -apiKey demo -userLabel "Demo"
+          sleep 8
+          xcrun simctl io "$UDID" screenshot screenshots/2-main.png
+
+          xcrun simctl spawn "$UDID" log show --last 2m --predicate 'process == "LiveTranslate"' > screenshots/app.log 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ipad-simulator-screenshots
+          path: screenshots/
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-logs
+          path: build/*.log
