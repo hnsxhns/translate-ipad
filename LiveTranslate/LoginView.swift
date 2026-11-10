@@ -49,6 +49,14 @@ struct LoginView: View {
             .frame(maxWidth: 380)
             .disabled(auth.isWorking)
 
+            Toggle("Ghi nhớ đăng nhập (lần sau tự vào thẳng)", isOn: $auth.remember)
+                .font(.callout)
+                .frame(maxWidth: 380)
+
+            Text("v\(AuthStore.appVersion)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+
             if auth.isWorking { ProgressView() }
 
             if let error = auth.errorMessage {

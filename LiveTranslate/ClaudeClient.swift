@@ -20,6 +20,12 @@ struct ClaudeClient {
             case .api(let msg): return msg
             }
         }
+
+        /// 401 / 403: the key or account itself is the problem.
+        var isAuthError: Bool {
+            if case .http(let code, _) = self { return code == 401 || code == 403 }
+            return false
+        }
     }
 
     /// Checks the key by listing models. Throws if the key is wrong.
@@ -33,29 +39,59 @@ struct ClaudeClient {
         guard code == 200 else { throw ClaudeError.http(code, Self.errorMessage(from: data)) }
     }
 
-    /// Streams a single-turn response. `onText` is called for every text chunk.
+    /// Single-turn convenience wrapper.
+    @discardableResult
     func stream(system: String,
                 user: String,
                 effort: String,
                 maxTokens: Int,
-                onText: @escaping (String) async -> Void) async throws {
+                onText: @escaping (String) async -> Void) async throws -> String {
+        try await stream(system: system, messages: [["role": "user", "content": user]],
+                         effort: effort, maxTokens: maxTokens, onText: onText)
+    }
+
+    /// Streams a reply to a (possibly multi-turn) conversation and returns the full text.
+    /// Tries with the server-side refusal fallback first; if the API rejects that option, retries without it.
+    @discardableResult
+    func stream(system: String,
+                messages: [[String: String]],
+                effort: String,
+                maxTokens: Int,
+                onText: @escaping (String) async -> Void) async throws -> String {
+        do {
+            return try await streamOnce(system: system, messages: messages, effort: effort,
+                                        maxTokens: maxTokens, useFallback: true, onText: onText)
+        } catch ClaudeError.http(400, let msg) where msg.lowercased().contains("fallback") {
+            return try await streamOnce(system: system, messages: messages, effort: effort,
+                                        maxTokens: maxTokens, useFallback: false, onText: onText)
+        }
+    }
+
+    private func streamOnce(system: String,
+                            messages: [[String: String]],
+                            effort: String,
+                            maxTokens: Int,
+                            useFallback: Bool,
+                            onText: @escaping (String) async -> Void) async throws -> String {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("messages"))
         req.httpMethod = "POST"
         req.timeoutInterval = 300
         req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         req.setValue(Self.apiVersion, forHTTPHeaderField: "anthropic-version")
-        req.setValue("server-side-fallback-2026-07-01", forHTTPHeaderField: "anthropic-beta")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": Self.model,
             "max_tokens": maxTokens,
             "stream": true,
-            "fallbacks": "default",
             "output_config": ["effort": effort],
             "system": system,
-            "messages": [["role": "user", "content": user]],
+            "messages": messages,
         ]
+        if useFallback {
+            req.setValue("server-side-fallback-2026-07-01", forHTTPHeaderField: "anthropic-beta")
+            body["fallbacks"] = "default"
+        }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (bytes, resp) = try await URLSession.shared.bytes(for: req)
@@ -66,6 +102,7 @@ struct ClaudeClient {
             throw ClaudeError.http(code, Self.errorMessage(from: data))
         }
 
+        var out = ""
         for try await line in bytes.lines {
             guard line.hasPrefix("data:") else { continue }
             let json = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
@@ -78,6 +115,7 @@ struct ClaudeClient {
                 if let delta = obj["delta"] as? [String: Any],
                    delta["type"] as? String == "text_delta",
                    let text = delta["text"] as? String {
+                    out += text
                     await onText(text)
                 }
             case "message_delta":
@@ -92,6 +130,27 @@ struct ClaudeClient {
                 break
             }
         }
+        return out
+    }
+
+    /// Short Vietnamese explanation of an API error (same wording as the Windows app).
+    static func friendlyError(_ error: Error) -> String {
+        let text = error.localizedDescription.lowercased()
+        if text.contains("credit balance") {
+            return "Tài khoản API hết credit ($0). Gói Ultra có $200/tháng: vào claude.ai → Settings → Billing → "
+                + "API credits → Link organization, rồi dùng API key của đúng tổ chức đó."
+        }
+        if let e = error as? ClaudeError {
+            switch e {
+            case .http(401, _): return "Phiên đăng nhập/API key không còn hợp lệ. Hãy đăng nhập lại."
+            case .http(403, _): return "Tài khoản không có quyền dùng model này."
+            case .http(429, _): return "Đang gửi quá nhiều yêu cầu (rate limit). Hãy thử lại sau ít phút."
+            case .refusal: return "Claude từ chối đoạn này."
+            default: break
+            }
+        }
+        if error is URLError { return "Mất kết nối tới Claude. Kiểm tra mạng." }
+        return "Lỗi Claude: \(String(error.localizedDescription.prefix(160)))"
     }
 
     private static func errorMessage(from data: Data) -> String {

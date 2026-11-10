@@ -1,8 +1,18 @@
 import SwiftUI
 
+/// Same layout as the Windows app (dividers can be dragged):
+///   left column : English (3/4)            | right column: Tiếng Việt (~1/2)
+///                 Key takeaways (1/4)       |               Claude answers (~1/3)
+///                                           |               prompt box (rest)
 struct MainView: View {
     @Bindable var auth: AuthStore
     @State private var session: LiveSession
+    @State private var leftSplits: [CGFloat] = [0.75]
+    @State private var rightSplits: [CGFloat] = [0.50, 0.84]
+    @State private var question = ""
+    @FocusState private var promptFocused: Bool
+
+    private static let accent = Color(red: 0.85, green: 0.47, blue: 0.34)
 
     init(auth: AuthStore, session: LiveSession) {
         self.auth = auth
@@ -13,39 +23,40 @@ struct MainView: View {
         VStack(spacing: 0) {
             topBar
             Divider()
-            GeometryReader { geo in
-                VStack(spacing: 0) {
-                    HStack(spacing: 0) {
-                        englishPanel.frame(width: geo.size.width / 2)
-                        Divider()
-                        vietnamesePanel
-                    }
-                    .frame(height: geo.size.height * 0.75)
-                    Divider()
-                    summaryPanel.frame(height: geo.size.height * 0.25)
-                }
+            HStack(spacing: 6) {
+                SplitColumn(splits: $leftSplits, panes: [AnyView(englishPanel), AnyView(summaryPanel)])
+                SplitColumn(splits: $rightSplits,
+                            panes: [AnyView(vietnamesePanel), AnyView(chatPanel), AnyView(promptPanel)])
+            }
+            .padding(6)
+        }
+        .background(Color(.systemGroupedBackground))
+        .task {
+            if ProcessInfo.processInfo.arguments.contains("-demo") {
+                session.loadDemo()
+            } else {
+                await auth.revalidateSavedLogin()
             }
         }
-        .background(Color(.systemBackground))
     }
 
-    // MARK: Top bar with the single ON/OFF button
+    // MARK: Top bar: status · menu · ON/OFF
 
     private var topBar: some View {
         HStack(spacing: 12) {
-            Text("Live Translate").font(.headline)
             if session.isRunning {
-                Label("Đang nghe", systemImage: "waveform")
-                    .font(.caption)
+                Image(systemName: "waveform")
                     .foregroundStyle(.red)
                     .symbolEffect(.variableColor.iterative, isActive: true)
             }
-            if let err = session.errorMessage {
-                Text(err).font(.caption).foregroundStyle(.red).lineLimit(1)
-            }
+            Text(session.status)
+                .font(.callout)
+                .foregroundStyle(session.statusIsError ? Color.red : Color.secondary)
+                .lineLimit(2)
             Spacer()
             Menu {
-                Text(auth.userLabel)
+                if !auth.userLabel.isEmpty { Text(auth.userLabel) }
+                Text("Live Translate v\(AuthStore.appVersion)")
                 Button("Xoá nội dung", systemImage: "trash") { session.clear() }
                     .disabled(session.isRunning)
                 Button("Đăng xuất", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
@@ -67,47 +78,115 @@ struct MainView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+        .background(.bar)
     }
 
-    // MARK: Panels
+    // MARK: Panes
 
     private var englishPanel: some View {
-        Panel(title: "English", scrollKey: session.entries.count + session.partial.count) {
-            ForEach(session.entries) { Text($0.en) }
-            if !session.partial.isEmpty {
-                Text(session.partial).foregroundStyle(.secondary)
+        Pane(title: "English (nhận diện giọng nói)",
+             scrollKey: session.englishLines.count * 1000 + session.partial.count) {
+            ForEach(Array(session.englishLines.dropLast().enumerated()), id: \.offset) { _, line in
+                Text(line)
+            }
+            // last line + live words in grey
+            if session.englishLines.last != nil || !session.partial.isEmpty {
+                (Text(session.englishLines.last.map { $0 + " " } ?? "")
+                 + Text(session.partial).foregroundStyle(Color.secondary))
             }
         }
     }
 
     private var vietnamesePanel: some View {
-        Panel(title: "Tiếng Việt", scrollKey: session.entries.reduce(0) { $0 + $1.vi.count }) {
-            ForEach(session.entries) { entry in
-                if entry.vi.isEmpty {
-                    Text("…").foregroundStyle(.tertiary)
-                } else {
-                    Text(entry.vi)
-                }
+        Pane(title: "Tiếng Việt (bản dịch)",
+             scrollKey: session.vietnamese.count * 100_000 + (session.vietnamese.last?.count ?? 0)) {
+            ForEach(Array(session.vietnamese.enumerated()), id: \.offset) { _, para in
+                Text(para.isEmpty ? "…" : para)
+                    .foregroundStyle(para.isEmpty ? Color.secondary : Color.primary)
             }
         }
     }
 
     private var summaryPanel: some View {
-        Panel(title: session.isSummarizing ? "Ý chính (đang cập nhật…)" : "Ý chính",
-              scrollKey: 0, autoScroll: false) {
-            if session.summary.isEmpty {
-                Text("Các ý chính sẽ hiện ở đây khi bắt đầu nghe.")
-                    .foregroundStyle(.tertiary)
-            } else {
-                Text(session.summary)
+        Pane(title: session.isSummarizing ? "Ý chính / Key takeaways (đang cập nhật…)" : "Ý chính / Key takeaways",
+             scrollKey: 0, autoScroll: false) {
+            Text(session.summary.isEmpty ? "Các ý chính sẽ hiện ở đây sau khi nghe được một đoạn." : session.summary)
+                .foregroundStyle(session.summary.isEmpty ? Color.secondary : Color.primary)
+        }
+    }
+
+    private var chatPanel: some View {
+        Pane(title: "Claude trả lời",
+             scrollKey: session.chat.count * 100_000 + (session.chat.last?.text.count ?? 0)) {
+            if session.chat.isEmpty {
+                Text("Hỏi Claude về nội dung đang nghe ở ô bên dưới.")
+                    .foregroundStyle(Color.secondary)
+            }
+            ForEach(session.chat) { msg in
+                let who = msg.role == .user
+                    ? Text("Bạn: ").bold().foregroundStyle(Color.blue)
+                    : Text("Claude: ").bold().foregroundStyle(Self.accent)
+                (who + Text(msg.text.isEmpty && session.chatBusy ? "…" : msg.text)
+                    .foregroundStyle(msg.isError ? Color.red : Color.primary))
             }
         }
-        .background(Color(.secondarySystemBackground))
+    }
+
+    private var promptPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            PaneHeader(title: "Hỏi Claude về nội dung đang nghe  (Return: gửi · Shift+Return: xuống dòng)")
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("Nhập câu hỏi…", text: $question, axis: .vertical)
+                    .lineLimit(1...6)
+                    .focused($promptFocused)
+                    .onKeyPress(.return, phases: .down) { press in
+                        if press.modifiers.contains(.shift) { return .ignored }
+                        sendQuestion()
+                        return .handled
+                    }
+                Button(action: sendQuestion) {
+                    Text(session.chatBusy ? "..." : "Gửi ➤").bold()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Self.accent)
+                .disabled(session.chatBusy || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(10)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func sendQuestion() {
+        guard !session.chatBusy else { return }
+        let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return }
+        question = ""
+        session.ask(q)
+        promptFocused = true
     }
 }
 
-/// A titled, scrollable text column that follows new content.
-private struct Panel<Content: View>: View {
+// MARK: - Building blocks
+
+private struct PaneHeader: View {
+    let title: String
+    var body: some View {
+        Text(title)
+            .font(.footnote.bold())
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.secondarySystemBackground))
+    }
+}
+
+/// A titled, scrollable text pane that follows new content.
+private struct Pane<Content: View>: View {
     let title: String
     let scrollKey: Int
     var autoScroll = true
@@ -115,30 +194,78 @@ private struct Panel<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(title.uppercased())
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, 6)
+            PaneHeader(title: title)
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
+                    LazyVStack(alignment: .leading, spacing: 10) {
                         content
                         Color.clear.frame(height: 1).id("bottom")
                     }
                     .font(.title3)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
+                    .padding(12)
                 }
                 .onChange(of: scrollKey) {
                     guard autoScroll else { return }
-                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                    proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// Vertical stack of panes with draggable dividers.
+/// `splits` are the divider positions as fractions of the height (e.g. [0.5, 0.84] for 3 panes).
+private struct SplitColumn: View {
+    @Binding var splits: [CGFloat]
+    let panes: [AnyView]
+    @State private var dragStart: CGFloat?
+
+    private let handle: CGFloat = 12
+    private let minPane: CGFloat = 60
+
+    var body: some View {
+        GeometryReader { geo in
+            let h = geo.size.height
+            let edges = [0] + splits + [1]
+            VStack(spacing: 0) {
+                ForEach(panes.indices, id: \.self) { i in
+                    let isLast = i == panes.count - 1
+                    panes[i]
+                        .frame(height: max(0, (edges[i + 1] - edges[i]) * h - (isLast ? 0 : handle)))
+                    if !isLast {
+                        grip(index: i, height: h)
+                    }
+                }
+            }
+        }
+    }
+
+    private func grip(index i: Int, height h: CGFloat) -> some View {
+        ZStack {
+            Color.clear
+            Capsule().fill(Color.secondary.opacity(0.35)).frame(width: 44, height: 4)
+        }
+        .frame(height: handle)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    guard h > 0 else { return }
+                    let start = dragStart ?? splits[i]
+                    if dragStart == nil { dragStart = start }
+                    let minGap = (minPane + handle) / h
+                    let lower = (i == 0 ? 0 : splits[i - 1]) + minGap
+                    let upper = (i == splits.count - 1 ? 1 : splits[i + 1]) - minGap
+                    guard lower < upper else { return }
+                    splits[i] = min(max(start + value.translation.height / h, lower), upper)
+                }
+                .onEnded { _ in dragStart = nil }
+        )
+        .hoverEffect(.highlight)
     }
 }

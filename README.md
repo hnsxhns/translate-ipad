@@ -1,6 +1,11 @@
 # Live Translate (iPad)
 
-Nghe tiếng Anh qua micro → khung **trái** hiện chữ tiếng Anh liên tục → khung **phải** hiện bản dịch tiếng Việt → khung **dưới** (cao 1/4) tóm tắt ý chính bằng tiếng Việt. Một nút **ON/OFF** ở góc phải thanh trên cùng.
+Giống bản Windows (LiveTranslator v1.3.0). Nghe tiếng Anh qua micro:
+
+- **Cột trái:** English (chữ đang nói màu xám, câu xong màu đen, mỗi câu một dòng) chiếm 3/4, bên dưới là **Ý chính / Key takeaways** (1/4).
+- **Cột phải:** **Tiếng Việt** (khoảng 1/2), **Claude trả lời** (khoảng 1/3), ô **Hỏi Claude** về nội dung đang nghe (Return: gửi, Shift+Return: xuống dòng).
+- Các đường chia giữa các khung **kéo được** để đổi kích thước. Thanh trên: dòng trạng thái, menu (xoá nội dung, đăng xuất), nút **ON/OFF**.
+- Đăng nhập có tuỳ chọn **Ghi nhớ đăng nhập**; key đã lưu được kiểm tra lại mỗi lần mở app.
 
 Cửa sổ thay đổi kích thước được (Split View / Stage Manager); bố cục tự co giãn.
 
@@ -77,10 +82,10 @@ Chọn Team ở *Signing & Capabilities*, cắm iPad, bấm Run. Nên chạy tr�
 | File | Vai trò |
 |---|---|
 | `LiveTranslate/SpeechEngine.swift` | Nhận diện tiếng Anh liên tục (Apple Speech, `en-US`, có dấu câu). Cắt đoạn khi ngừng nói 1,3 giây hoặc sau 25 giây, mở ngay đoạn mới nên không mất âm thanh. |
-| `LiveTranslate/LiveSession.swift` | Mỗi đoạn tiếng Anh → dịch bằng Claude (kèm 3 đoạn trước làm ngữ cảnh), stream, giữ đúng thứ tự. Tóm tắt ý chính tối đa mỗi 15 giây và lần cuối khi bấm OFF. |
-| `LiveTranslate/ClaudeClient.swift` | Gọi Claude Messages API qua HTTP + streaming. Model `claude-opus-5-5` (dịch: effort `low`, tóm tắt: `medium`), tự chuyển model dự phòng nếu bị từ chối. |
+| `LiveTranslate/LiveSession.swift` | Gom câu hoàn chỉnh rồi mới dịch (câu dở chờ tối đa 6 giây hoặc 40 từ), kèm 4 cặp EN/VI trước làm ngữ cảnh, stream, giữ đúng thứ tự. Ý chính cập nhật mỗi 25 giây khi có nội dung mới và lần cuối khi bấm OFF. Chat hỏi Claude nhiều lượt (biết bản ghi, bản dịch, ý chính). |
+| `LiveTranslate/ClaudeClient.swift` | Gọi Claude Messages API qua HTTP + streaming. Model `claude-opus-5-5` (dịch: effort `low`, tóm tắt và chat: `medium`), tự chuyển model dự phòng nếu bị từ chối, thông báo lỗi tiếng Việt dễ hiểu (hết credit, key sai, rate limit, mất mạng). |
 | `LiveTranslate/AuthStore.swift`, `LoginView.swift` | Đăng nhập Claude / Google. |
-| `LiveTranslate/MainView.swift` | Thanh trên + nút ON/OFF, 2 khung trái/phải (3/4 chiều cao), khung ý chính (1/4). |
+| `LiveTranslate/MainView.swift` | Thanh trên + ON/OFF; cột trái English/Ý chính, cột phải Tiếng Việt/Claude trả lời/ô hỏi; đường chia kéo được. |
 | `project.yml` | Cấu hình XcodeGen (sinh file Xcode). |
 | `.github/workflows/testflight.yml` | Build + ký + đẩy lên TestFlight. |
 

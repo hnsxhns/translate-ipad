@@ -23,6 +23,27 @@ final class AuthStore {
 
     var isLoggedIn: Bool { apiKey != nil }
 
+    /// "Ghi nhớ đăng nhập": keep the key so next launch goes straight in (like the Windows app).
+    var remember: Bool = UserDefaults.standard.object(forKey: "remember") as? Bool ?? true {
+        didSet { defaults.set(remember, forKey: "remember") }
+    }
+
+    static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+    }
+
+    /// Remembered login: check in the background that the saved key still works; if the key is
+    /// rejected, go back to the login screen. Network problems keep the user signed in.
+    func revalidateSavedLogin() async {
+        guard let key = apiKey else { return }
+        do {
+            try await ClaudeClient(apiKey: key).validate()
+        } catch let e as ClaudeClient.ClaudeError where e.isAuthError {
+            logout()
+            errorMessage = "Phiên đăng nhập đã lưu không còn dùng được. Hãy đăng nhập lại."
+        } catch {}
+    }
+
     static var bundledKey: String? {
         let key = (Bundle.main.object(forInfoDictionaryKey: "ClaudeAPIKey") as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -93,8 +114,13 @@ final class AuthStore {
         apiKey = key
         userLabel = label
         googleNeedsKey = false
-        defaults.set(key, forKey: "apiKey")
-        defaults.set(label, forKey: "userLabel")
+        if remember {
+            defaults.set(key, forKey: "apiKey")
+            defaults.set(label, forKey: "userLabel")
+        } else {
+            defaults.removeObject(forKey: "apiKey")
+            defaults.removeObject(forKey: "userLabel")
+        }
     }
 
     func logout() {
