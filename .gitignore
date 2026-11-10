@@ -1,0 +1,7 @@
+*.xcodeproj/
+LiveTranslate/Info.plist
+LiveTranslate/Assets.xcassets/AppIcon.appiconset/icon-1024.png
+build/
+DerivedData/
+.DS_Store
+*.p8

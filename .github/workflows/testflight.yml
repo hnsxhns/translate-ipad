@@ -1,0 +1,68 @@
+name: TestFlight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  testflight:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Generate project and icon
+        run: |
+          brew install xcodegen
+          python3 scripts/make_icon.py LiveTranslate/Assets.xcassets/AppIcon.appiconset/icon-1024.png
+          xcodegen generate
+
+      - name: App Store Connect API key
+        run: echo "${{ secrets.ASC_KEY_P8_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: Archive
+        run: |
+          xcodebuild archive \
+            -project LiveTranslate.xcodeproj \
+            -scheme LiveTranslate \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/LiveTranslate.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8" \
+            -authenticationKeyID "${{ secrets.ASC_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.ASC_ISSUER_ID }}" \
+            DEVELOPMENT_TEAM="${{ secrets.TEAM_ID }}" \
+            APP_BUNDLE_ID="${{ vars.BUNDLE_ID }}" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            CLAUDE_API_KEY="${{ secrets.CLAUDE_API_KEY }}" \
+            GOOGLE_CLIENT_ID="${{ vars.GOOGLE_CLIENT_ID }}" \
+            GOOGLE_REVERSED_CLIENT_ID="${{ vars.GOOGLE_REVERSED_CLIENT_ID || 'com.googleusercontent.apps.placeholder' }}"
+
+      - name: Upload to TestFlight
+        run: |
+          cat > ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>${{ secrets.TEAM_ID }}</string>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict></plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/LiveTranslate.xcarchive" \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8" \
+            -authenticationKeyID "${{ secrets.ASC_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.ASC_ISSUER_ID }}"
